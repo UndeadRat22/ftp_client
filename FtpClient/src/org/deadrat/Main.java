@@ -1,71 +1,43 @@
 package org.deadrat;
-import java.util.Scanner;
 
+import java.util.Scanner;
 
 public class Main {
 
-    public static void main(String[] args) {
-        var client = new FTPClient(1024);
-        Scanner reader = new Scanner(System.in);
-        while (true)
-        {
-            System.out.print("ftp > ");
-            String line = reader.nextLine();
-
-            if (line.contains("open"))
-            {
-                try
-                {
-                    var cmdargs = line.split(" ");
-                    if (cmdargs[1].equals("localhost"))
-                    {
-                        client.setAddress("127.0.0.1", "21");
-                    }
-                    else
-                    {
-                        client.setAddress(cmdargs[1], cmdargs[2]);
-                    }
-                    client.open();
-                } catch (Exception e)
-                {
-                    System.err.println("Exception occured when trying to open a ftp connection.");
-                    System.err.println(e);
-                }
-            }
-            else if (line.contains("login"))
-            {
-                try
-                {
-                    var cmdargs = line.split(" ");
-                    client.login(cmdargs[1], cmdargs[2]);
-                } catch (Exception e)
-                {
-                    System.err.println("Exception occured when trying to login to a remote ftp connection.");
-                    System.err.println(e);
-                }
-            }
-            else if (line.substring(0, 3).equals("dir") || line.substring(0, 2).equals("ls"))
-            {
-                try
-                {
+    public static void main(String[] args) throws Exception {
+        FTPClient client = new FTPClient();
+        Scanner scanner = new Scanner(System.in);
+        String host = "";
+        String name = "";
+        String dir = "";
+        while (true) {
+            try {
+                System.out.print("ftp:\\\\" + name + "@" + host + "\t" + dir + ">");
+                String line = scanner.nextLine().trim();
+                if (line.startsWith("open")) {
+                    String[] address = line.split(" ")[1].split(":");
+                    client.connect(address[0], Integer.parseInt(address[1]));
+                    host = address[0] + ":" + address[1];
+                } else if (line.startsWith("login")) {
+                    String[] credentials = line.split(" ")[1].split(":");
+                    client.login(credentials[0], credentials[1]);
+                    name = credentials[0];
+                } else if (line.startsWith("pwd")) {
+                    dir = client.pwd();
+                } else if (line.startsWith("list") || line.startsWith("ls") || line.startsWith("dir")) {
                     client.list();
-                } catch (Exception e)
-                {
-                    System.err.println("Exception occured when trying to list remote files.");
-                    System.err.println(e);
+                } else if (line.startsWith("quit")) {
+                    client.disconnect();
+                } else if (line.startsWith("exit")) {
+                    client.disconnect();
+                    break;
+                } else if (line.startsWith("test")){
+                    client.connect("localhost", 21);
+                    client.login("anonymous", "p");
+                    client.pwd();
                 }
-            }
-            else if (line.substring(0, 3).equals("get") || line.substring(0, 8).equals("download"))
-            {
-                var cmdargs = line.split(" ");
-                try
-                {
-                    client.getFile(cmdargs[1], cmdargs[2]);
-                } catch (Exception e)
-                {
-                    System.err.println("Exception occured when trying to get remote file " + cmdargs[1] + ".");
-                    System.err.println(e);
-                }
+            } catch (Exception e) {
+                System.out.println(e.getMessage());
             }
         }
     }

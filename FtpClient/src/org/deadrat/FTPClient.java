@@ -1,174 +1,179 @@
 package org.deadrat;
 
-import java.io.*;
-import java.net.*;
-import java.util.Scanner;
-import java.util.regex.*;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.net.Socket;
 
-public class FTPClient
-{
-    private int dataPortTryCount = 0;
-    private int maxTryCount = 4;
-    private boolean connected;
-    private boolean loggedIn;
-    private boolean dataSocketCreated;
-    
-    private byte[] buffer;
-    private InetAddress address;
-    private int port;
+public class FTPClient {
 
-    private int dataPort;
+    private Socket socket = null;
+    private BufferedReader reader = null;
+    private BufferedWriter writer = null;
+    private static boolean DEBUG = true;
 
-    private Socket controlSocket;
-    private ServerSocket serverSocket;
-	private Scanner controlScanner;
-	private PrintWriter controlWriter;
+    public void connect(String host, int port) throws Exception {
+        if (socket != null)
+            throw new IOException("Already connected");
 
-	private Socket dataSocket;
-	private InputStream dataIs;
-	private OutputStream dataOs;
+        this.socket = new Socket(host, port);
+        this.reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+        this.writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
 
-	private Scanner dataScanner;
-	private PrintWriter dataWriter;
-    private Scanner userInputScanner;
-    
-    private String lastMessage;
-
-    public FTPClient(int bufferSize)
-    {
-        buffer = new byte[bufferSize];
+        String response = readLine();
+        if (!response.startsWith("220"))
+            throw new Exception("Could not connect to server: " + response);
     }
 
-    public void setAddress(String address, String port) throws UnknownHostException
-    {
-        if (connected)
-            return;
-        this.address = Inet4Address.getByName(address);
-        this.port = Integer.parseInt(port);
+    public void login(String user, String pass) throws Exception {
+        sendLine("USER " + user);
+        String response = readLine();
+        if (!response.startsWith("331"))
+            throw new Exception("Could not log in as: " + user + ":" + pass + "\n response:" + response);
+
+        sendLine("PASS " + pass);
+
+        response = readLine();
+        if (!response.startsWith("230"))
+            throw new Exception("Could not log in as: " + user + ":" + pass + "\n response:" + response);
     }
 
-    public void open() throws IOException
-    {
-        if (connected)
-            return;
-        controlSocket = new Socket(address, port);
-        controlScanner = new Scanner(controlSocket.getInputStream());
-        controlWriter = new PrintWriter(controlSocket.getOutputStream(), true);
-        connected = true;
-        printOpResult();
-    }
-
-    public void printOpResult()
-    {
-        lastMessage = controlScanner.nextLine();
-
-        System.out.println(lastMessage);
-    }
-
-    public int getOperationStatusCode()
-    {
-        for (var str : lastMessage.trim().split(" ")) 
-        {
-            if (Pattern.matches("\\d{3}", str))
-                return Integer.parseInt(str);
-        }
-        return -1;
-    }
-
-    public void getDataPort() throws IOException
-    {
-        if (maxTryCount == dataPortTryCount)
-            throw new IOException("Failed to open a listen socket.");
-        this.dataPort = (int)(Math.random() * 65565);
-        int portPart1 = dataPort / 256;
-        int portPart2 = dataPort % 256;
-        controlWriter.println("PORT 127,0,0,1," + portPart1 + "," + portPart2 );
-        printOpResult();
+    public void disconnect() throws Exception {
+        if (socket == null)
+            throw new Exception("Not connected");
         try {
-            dataPortTryCount++;
-            serverSocket = new ServerSocket(dataPort);
-        } catch (Exception e)
-        {
-            getDataPort();
+            sendLine("QUIT");
+        } finally {
+            socket = null;
         }
-        dataPortTryCount = 0;
     }
 
-    public void list() throws Exception
-    {
-        controlWriter.println("LIST");
-        printOpResult();
-        createDataSocket();
-
-        while(dataScanner.hasNext())
-        {
-			System.out.println(dataScanner.nextLine());
-        }
-        closeDataSocket();
+    public String pwd() throws Exception {
+        sendLine("PWD");
+        String response = readLine();
+        if (!response.startsWith("257"))
+            throw new Exception("Received unknown response from server: " + response);
+        int start = response.indexOf('"');
+        return response.substring(start + 1, response.indexOf('"', start + 1));
     }
 
-    private void createDataSocket() throws Exception
-    {
-        dataSocket = serverSocket.accept();
-        dataIs = dataSocket.getInputStream();
-        dataOs = dataSocket.getOutputStream();
-        dataScanner = new Scanner(dataIs);
-        dataWriter = new PrintWriter(dataOs,true);
+    public void cwd(String dir) throws Exception {
+        sendLine("CWD " + dir);
+        String response = readLine();
+        if (!response.startsWith("250"))
+            throw new Exception("Received unknown response from server: " + response);
     }
 
-    private void closeDataSocket() throws Exception
-    {
-        dataWriter.close();
-        dataScanner.close();
-        dataIs.close();
-        dataOs.close();
-        dataSocket.close();
-    }
-
-    public boolean getFile(String remoteFilename, String localFilename) throws Exception
-    {
-        getDataPort();
-
-        var output = createLocalFile(localFilename);
-        controlWriter.println("RETR " + remoteFilename);
-        createDataSocket();
-        printOpResult();
-        BufferedInputStream input = new BufferedInputStream(dataIs);
+    public void list() throws Exception {
+        String[] addr = pasv();
+        sendLine("LIST");
+        String response = readLine();
+        if (!response.startsWith("150"))
+            throw new Exception("Received unknown response from server: " + response);
+        Socket dataSocket = new Socket(addr[0], Integer.parseInt(addr[1]));
+        BufferedInputStream input = new BufferedInputStream(dataSocket.getInputStream());
+        byte[] buffer = new byte[4096];
         int bytesRead = 0;
-        while ((bytesRead = input.read(buffer)) != -1)
-        {
+        BufferedOutputStream output = new BufferedOutputStream(System.out);
+        while ((bytesRead = input.read(buffer)) != -1) {
             output.write(buffer, 0, bytesRead);
         }
+        response = readLine();
+        output.flush();
+        input.close();
 
+        dataSocket.close();
+        if (!response.startsWith("226"))
+            throw new Exception("Received unknown response from server: " + response);
+    }
+
+    private String[] pasv() throws Exception {
+        sendLine("PASV");
+        String response = readLine();
+        if (!response.startsWith("227"))
+            throw new IOException("Unable to enter passive mode: " + response);
+        String[] parts = response.substring(response.indexOf('(') + 1, response.indexOf(')')).split(",");
+        String ip = parts[0] + "." + parts[1] + "." + parts[2] + "." + parts[3];
+        String port = Integer.toString(Integer.parseInt(parts[4]) * 256 + Integer.parseInt(parts[5]));
+        return new String[] { ip, port };
+    }
+
+    public void stor(File file) throws Exception {
+        if (!file.exists())
+            throw new Exception("Specified file does not exist");
+        if (!file.isFile())
+            throw new Exception("Can not upload specified file!");
+
+        BufferedInputStream input = new BufferedInputStream(new FileInputStream(file));
+
+        String[] serverDataSockAddr = pasv();
+        sendLine("STOR " + file.getName());
+        Socket dataSocket = new Socket(serverDataSockAddr[0], Integer.parseInt(serverDataSockAddr[1]));
+
+        String response = readLine();
+        if (!response.startsWith("125")) {
+            input.close();
+            dataSocket.close();
+            throw new IOException("Could not send file: " + file.getName() + "response:  " + response);
+        }
+
+        BufferedOutputStream output = new BufferedOutputStream(dataSocket.getOutputStream());
+        byte[] buffer = new byte[4096];
+        int bytesRead = 0;
+        while ((bytesRead = input.read(buffer)) != -1) {
+            output.write(buffer, 0, bytesRead);
+        }
         output.flush();
         output.close();
+        input.close();
+        dataSocket.close();
 
-        closeDataSocket();
-        return true;
+        response = readLine();
+        if (!response.startsWith("226"))
+            throw new IOException("Could not send file: " + file.getName() + "response:  " + response);
+
     }
 
-    private BufferedOutputStream  createLocalFile(String filename) throws IOException
-    {
-        File outFile = new File(filename);
-        if (outFile.exists())
-            outFile.delete();
-        outFile.createNewFile();
-        return new BufferedOutputStream (new FileOutputStream(outFile));
+    public void bin() throws Exception {
+        sendLine("TYPE I");
+        String response = readLine();
+        if (!response.startsWith("200"))
+            throw new Exception("Could not enter binary mode");
     }
 
-    public boolean login(String username, String password) throws IOException
-    {
-        if (loggedIn)
-            return false;
-        controlWriter.println("USER " + username);
-        printOpResult();
-        if (getOperationStatusCode() != 331)
-            return false;
-        controlWriter.println("PASS " + password);
-        printOpResult();
-        if (getOperationStatusCode() != 230)
-            return false;
-        loggedIn = true;
-        return true;
+    public void ascii() throws Exception {
+        sendLine("TYPE A");
+        String response = readLine();
+        if (!response.startsWith("200"))
+            throw new Exception("Could not enter ascii mode");
+    }
+
+    private void sendLine(String line) throws Exception {
+        if (socket == null)
+            throw new Exception("Not connected to any server.");
+        try {
+            writer.write(line + "\r\n");
+            writer.flush();
+            if (DEBUG) {
+                System.out.println("> " + line);
+            }
+        } catch (IOException e) {
+            socket = null;
+            throw e;
+        }
+    }
+
+    private String readLine() throws Exception {
+        String line = reader.readLine();
+        if (DEBUG) {
+            System.out.println("< " + line);
+        }
+        return line;
     }
 }
