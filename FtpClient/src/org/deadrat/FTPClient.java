@@ -1,14 +1,6 @@
 package org.deadrat;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
+import java.io.*;
 import java.net.Socket;
 
 public class FTPClient {
@@ -16,7 +8,6 @@ public class FTPClient {
     private Socket socket = null;
     private BufferedReader reader = null;
     private BufferedWriter writer = null;
-    private static boolean DEBUG = true;
 
     public void connect(String host, int port) throws Exception {
         if (socket != null)
@@ -104,7 +95,36 @@ public class FTPClient {
         return new String[] { ip, port };
     }
 
-    public void stor(File file) throws Exception {
+    public void retrieve(String remote, String local) throws Exception {
+        String[] serverDataSockAddr = pasv();
+        sendLine("RETR " + remote);
+        Socket dataSocket = new Socket(serverDataSockAddr[0], Integer.parseInt(serverDataSockAddr[1]));
+        BufferedInputStream input = new BufferedInputStream(dataSocket.getInputStream());
+
+        String response = readLine();
+        if (!response.startsWith("150")) {
+            input.close();
+            dataSocket.close();
+            throw new IOException("Could not download file: " + remote + "response:  " + response);
+        }
+
+        BufferedOutputStream output = new BufferedOutputStream(new FileOutputStream(new File(local)));
+        byte[] buffer = new byte[4096];
+        int bytesRead = 0;
+        while ((bytesRead = input.read(buffer)) != -1) {
+            output.write(buffer, 0, bytesRead);
+        }
+        output.flush();
+        output.close();
+        input.close();
+        dataSocket.close();
+        response = readLine();
+        if (!response.startsWith("226"))
+            throw new IOException("Could not donwload file: " + remote + "response:  " + response);
+    }
+
+    public void store(String filename) throws Exception {
+        File file = new File(filename);
         if (!file.exists())
             throw new Exception("Specified file does not exist");
         if (!file.isFile())
@@ -117,12 +137,11 @@ public class FTPClient {
         Socket dataSocket = new Socket(serverDataSockAddr[0], Integer.parseInt(serverDataSockAddr[1]));
 
         String response = readLine();
-        if (!response.startsWith("125")) {
+        if (!response.startsWith("150")) {
             input.close();
             dataSocket.close();
             throw new IOException("Could not send file: " + file.getName() + "response:  " + response);
         }
-
         BufferedOutputStream output = new BufferedOutputStream(dataSocket.getOutputStream());
         byte[] buffer = new byte[4096];
         int bytesRead = 0;
@@ -133,14 +152,15 @@ public class FTPClient {
         output.close();
         input.close();
         dataSocket.close();
-
         response = readLine();
         if (!response.startsWith("226"))
             throw new IOException("Could not send file: " + file.getName() + "response:  " + response);
 
     }
 
-    public void bin() throws Exception {
+
+
+    public void binary() throws Exception {
         sendLine("TYPE I");
         String response = readLine();
         if (!response.startsWith("200"))
@@ -160,9 +180,6 @@ public class FTPClient {
         try {
             writer.write(line + "\r\n");
             writer.flush();
-            if (DEBUG) {
-                System.out.println("> " + line);
-            }
         } catch (IOException e) {
             socket = null;
             throw e;
@@ -171,9 +188,6 @@ public class FTPClient {
 
     private String readLine() throws Exception {
         String line = reader.readLine();
-        if (DEBUG) {
-            System.out.println("< " + line);
-        }
         return line;
     }
 }
